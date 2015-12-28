@@ -1,39 +1,72 @@
-import time, datetime
-import sys, os
+from CurrencyOption import CurrencyOption
+
+import datetime
 from multiprocessing import Process, Pipe, Manager
 import numpy as np
-from scipy.stats import norm
+import os
+import re
 from selenium import webdriver
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
-import selenium.webdriver.support.ui as ui
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
+import selenium.webdriver.support.ui as ui
+from sys import exit
+import time
+import urllib
 
-def useFirefox():
-    return webdriver.Firefox()
 
 class NadexSearch:
+
+    currencyPairs = ('AUD/JPY', 'AUD/USD', 'EUR/GBP', 'EUR/JPY', 'EUR/USD',
+                     'GBP/JPY', 'GBP/USD', 'USD/CAD', 'USD/CHF', 'USD/JPY')
+
+    iFrames = ('default', 'ifrMyPrices', 'ifrFinder', 'ifrDealingRates', 'ifrBetslip-0')
+    currentFrame = iFrames[0]
 
     """                     FUNCTIONS                   """
 
     def __init__(self):
         self.driver = webdriver.Firefox()
-        self.username = "demo-stochastic"
-        self.password = "VINY5X"
+        self.username = ""  # NOTE: Enter demo username here.
+        self.password = ""  # NOTE: Enter demo password here.
         self.balance = -1
         self.purchaseInProgress = False
         self.optionList = []
-        self.currencyPairs = ['AUD/JPY', 'AUD/USD', 'EUR/GBP', 'EUR/JPY', 'EUR/USD',
-                              'GBP/JPY', 'GBP/USD', 'USD/CAD', 'USD/CHF', 'USD/JPY']
+        self.exchangeRates = {}
 
+    def getExchangeRates(self):
+        """Iterate over all currency pairs and save their exchange rates."""
+
+        for pair in self.currencyPairs:
+            self.exchangeRates[pair] = self.YahooExchangeRates(pair)
+            # Try again if the page does not load correctly.
+            while self.exchangeRates[pair] == 'Error.':
+                self.exchangeRates[pair] = self.YahooExchangeRates(pair)
+
+    def YahooExchangeRates(self, pair):
+        """Uses regex to gather exchange rates for all currency pairs."""
+
+        pair = pair.replace("/", "")
+        url = 'http://finance.yahoo.com/q?s=' + pair + '=X'
+        regex = '<span id="yfs_l10_' + pair.lower() + '=x">(.+?)</span>'
+        pattern = re.compile(regex)
+        htmltext = urllib.request.urlopen(url).read().decode("utf-8")
+        results = re.findall(pattern, htmltext)
+
+        try:
+            exchangeRate = float(results[0])
+        except IndexError:
+            exchangeRate = "Error."
+
+        return exchangeRate
 
     def signIn(self):
         """Goes to the Nadex website and signs in to a demo account."""
 
         self.driver.get("http://www.nadex.com/login.html")
-        ui.WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.ID, "account_id")))
+        ui.WebDriverWait(self.driver, 30).until(EC.presence_of_element_located((By.ID, "account_id")))
 
-        #~ wait = ui.WebDriverWait(driver, 15) # Times out after 15 seconds.
+        # wait = ui.WebDriverWait(driver, 15)  # Times out after 15 seconds.
 
         elem = self.driver.find_element_by_id("account_id")
         elem.send_keys(self.username)
@@ -43,7 +76,7 @@ class NadexSearch:
 
         print("Waiting for page to load...")
 
-        ui.WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.ID, "ifrMyPrices")))
+        ui.WebDriverWait(self.driver, 30).until(EC.presence_of_element_located((By.ID, "ifrMyPrices")))
         time.sleep(2)
 
         self.balance = self.getBalance()
@@ -52,10 +85,10 @@ class NadexSearch:
         time.sleep(1.2)
         print("\nWelcome. Your starting balance is: \t$" + str('%.2f' % self.balance))
 
-        #~ For switching to custom watchlist.
-        #~ driver.find_element_by_id("selectWatchlist_currVal").click()
-        #~ driver.find_element_by_xpath('//*[@id="selectWatchlist_ddScroll"]/ul/li[16]').click()
-        #~ time.sleep(10)
+        # For switching to custom watchlist.
+        # driver.find_element_by_id("selectWatchlist_currVal").click()
+        # driver.find_element_by_xpath('//*[@id="selectWatchlist_ddScroll"]/ul/li[16]').click()
+        # time.sleep(10)
 
     def getBalance(self):
         """Returns the account's current balance as a floating point."""
@@ -71,12 +104,12 @@ class NadexSearch:
         Useful because the names of options are always changing.
         Clean=True will remove unpriced options."""
 
-        names = self.driver.execute_script(  """adrNames = window.parent.frames['ifrMyPrices'].document.getElementsByClassName('floatLeft tableIcon dealOpen');
-                                        namesText = "";
-                                        for(var i = 0; i < adrNames.length; i++){
-                                            namesText += adrNames[i].textContent + ",";
-                                        }
-                                        return namesText;""")
+        names = self.driver.execute_script("""adrNames = window.parent.frames['ifrMyPrices'].document.getElementsByClassName('floatLeft tableIcon dealOpen');
+                                              namesText = "";
+                                              for(var i = 0; i < adrNames.length; i++){
+                                                  namesText += adrNames[i].textContent + ",";
+                                              }
+                                              return namesText;""")
 
         nameList = [n for n in names.split(",")]
 
@@ -100,12 +133,12 @@ class NadexSearch:
         Useful for obvious reasons.
         Clean=True will remove unpriced options."""
 
-        prices = self.driver.execute_script( """adrPrices = window.parent.frames['ifrMyPrices'].document.getElementsByClassName('price dealOpen');
-                                        priceText = "";
-                                        for(var j = 0; j < adrPrices.length; j++){
-                                            priceText += adrPrices[j].textContent + ",";
-                                        }
-                                        return priceText;""")
+        prices = self.driver.execute_script("""adrPrices = window.parent.frames['ifrMyPrices'].document.getElementsByClassName('price dealOpen');
+                                               priceText = "";
+                                               for(var j = 0; j < adrPrices.length; j++){
+                                                   priceText += adrPrices[j].textContent + ",";
+                                               }
+                                               return priceText;""")
 
         priceList = [p for p in prices.split(",")]
 
@@ -115,7 +148,7 @@ class NadexSearch:
             print("There are no open contracts.")
 
         else:
-            for x in range(0,len(priceList)):
+            for x in range(0, len(priceList)):
                 try:
                     priceList[x] = float(priceList[x])
                 except ValueError:
@@ -135,14 +168,14 @@ class NadexSearch:
         """Returns expire time in years.
         Why years? The interest rates are expressed in years, and the units must be consistent."""
 
-        times = self.driver.execute_script(  """adrTimes = window.parent.frames['ifrMyPrices'].document.getElementsByClassName('yui-dt0-col-timeToExpiry yui-dt-col-timeToExpiry yui-dt-sortable');
-                                        timeText = "";
-                                        for(var k = 0; k < adrTimes.length; k++){
-                                            timeText += adrTimes[k].textContent + ",";
-                                        }
-                                        return timeText;""")
+        times = self.driver.execute_script("""adrTimes = window.parent.frames['ifrMyPrices'].document.getElementsByClassName('yui-dt0-col-timeToExpiry yui-dt-col-timeToExpiry yui-dt-sortable');
+                                              timeText = "";
+                                              for(var k = 0; k < adrTimes.length; k++){
+                                              timeText += adrTimes[k].textContent + ",";
+                                              }
+                                              return timeText;""")
         timeList = [t.replace(" ", "") for t in times.split(',')]
-        del timeList[0] #Needed to remove title and empty string.
+        del timeList[0]  # Needed to remove title and empty string.
         del timeList[-1]
 
         for x in range(0, len(timeList)):
@@ -150,7 +183,7 @@ class NadexSearch:
                 continue
 
             t = timeList[x]
-            if any('h' == c for c in t): #Not all timestamps are given in the same format.
+            if any('h' == c for c in t):  # Not all timestamps are given in the same format.
                 t = t.replace("h", "")
                 t = t.replace("m", "")
                 t = time.strptime(t, "%H:%M")
@@ -163,7 +196,7 @@ class NadexSearch:
                 try:
                     t = time.strptime(t, "%M:%S")
                     t = datetime.timedelta(minutes=t.tm_min, seconds=t.tm_sec).total_seconds()
-                except:
+                except:  # FIX ME: catch actual exception
                     t = "0"+t
                     t = time.strptime(t, "%M:%S")
                     t = datetime.timedelta(minutes=t.tm_min, seconds=t.tm_sec).total_seconds()
@@ -201,12 +234,24 @@ class NadexSearch:
         underlying = self.getIndicatives()
         prices = self.getPrices(False)
 
-        for x in range(0, len(names)):
-            if not any(names[x].split(" ")[0] == pair for pair in self.currencyPairs):
+        for x, name in enumerate(names):
+            currentPair = name.split(" ")[0]
+            if not any(currentPair == pair for pair in self.currencyPairs):
                 continue
             if prices[2*x] == '-' or prices[2*x+1] == '-':
                 continue
-            self.optionList.append(CurrencyOption(names[x], prices[2*x], prices[2*x + 1], expiry[x], underlying[x], childPipes[x], x))
+
+            newOption = CurrencyOption(name,
+									   prices[2*x],
+									   prices[2*x + 1],
+									   self.exchangeRates[currentPair],
+									   expiry[x],
+									   underlying[x],
+									   childPipes[x],
+									   motherOfAllBuyPrices[x],
+									   motherOfAllSellPrices[x],
+									   motherOfAllUnderlying[x])
+            self.optionList.append(newOption)
 
     def scanner(self, spread):
         """Displays options with specified spread. Useful for making trades manually."""
@@ -226,7 +271,7 @@ class NadexSearch:
         frmt = "%*s%*s%*s%*s"
 
         while n < len(names):
-            try:        #try is necessary to prevent errors from '-' prices.
+            try:  # try is necessary to prevent errors from '-' prices.
                 differential = abs(float(prices[p]) - float(prices[p+1]))
                 if differential <= spread:
                     print(frmt % (0, names[n], 50-len(names[n]), prices[p], 7, prices[p+1], 9, differential))
@@ -266,7 +311,7 @@ class NadexSearch:
             if len(currentPrices) != length:
                 gatheringConnection.send(False)
                 print("The amount of open contracts has changed.")
-                sys.exit()
+                exit()
 
             else:
                 currentTimes = self.getExpireTimes()
@@ -284,16 +329,15 @@ class NadexSearch:
                 timeConnection.send(times)
 
                 print("End ", counter)
-                counter+=1
+                counter += 1
 
     def startTrading(self, childPipes):
         """Launches processes for each option."""
-        global optionList
 
-        if not optionList:
+        if not self.optionList:
             self.makeOptions(childPipes)
 
-        for option in optionList:
+        for option in self.optionList:
             Process(target=self.analyzeData, args=(option,)).start()
             time.sleep(1)
 
@@ -302,7 +346,7 @@ class NadexSearch:
     def analyzeData(self, option):
         """This is a place for *very* basic trading algorithms for testing, not for winning.
         Currently does nothing interesting. Make it trade off of the Greeks or something."""
-        # Not sure what these comments are for.
+
         # global processIDs
         # proxyList = processIDs
         # currentProcess = os.getpid()
@@ -313,73 +357,117 @@ class NadexSearch:
             if abs(option.buyPrice - option.sellPrice) <= 5:
                 if option.strike/option.underlying <= 0.9 and option.delta() <= 0.5:
                     option.buy(lotSize=1, short=True)
-                    sys.exit()
-                elif 1 >= option.strike/option.underlying >= 0.995  and option.delta() > 0:
+                    exit()
+                elif 1 >= option.strike/option.underlying >= 0.995 and option.delta() > 0:
                     option.buy(lotSize=1, short=False)
-                    sys.exit()
-                elif  1 >= option.strike/option.underlying >= 0.995  and option.delta() < 0:
+                    exit()
+                elif 1 >= option.strike/option.underlying >= 0.995 and option.delta() < 0:
                     option.buy(lotSize=1, short=True)
-                    sys.exit()
-                elif 1.01 >= option.strike/option.underlying >= 1  and option.delta() < 0:
+                    exit()
+                elif 1.01 >= option.strike/option.underlying >= 1 and option.delta() < 0:
                     option.buy(lotSize=1, short=True)
-                    sys.exit()
-
-
+                    exit()
 
     def placeOrderExample(self):
         """Places an order with no strategy, just to demonstrate that it works."""
 
-        global optionList
-
-        if not optionList:
+        if not self.optionList:
             return "There are no contracts to order."
 
-        global currentFrame
-
-        for option in optionList:
+        for option in self.optionList:
             start_time = time.time()
             option.buy(lotSize=1, short=False)
             timeTracker[9].append(time.time() - start_time)
             print("Average time: ", np.mean(timeTracker[9]))
+
+    def buy(self, option, lotSize=1, short=False):
+        """Buys the option."""
+
+        global ticketsOpen
+
+        while self.purchaseInProgress:
+            pass
+        self.purchaseInProgress = True
+
+        try:
+            self.driver.find_element_by_link_text(option.name).click()
+            ticketsOpen += 1
+            ticket = str(ticketsOpen)
+        except:  # FIX ME: catch actual exception
+            return "Link_text not found."
+
+        # This is here to prevent the code from executing before the order form has even opened.
+        loaded = False
+        while not loaded:
+            try:
+                float(self.driver.execute_script("return window.parent.frames['ifrBetslip-"+ticket+"'].document.getElementById('dmaPriceCurrent').textContent"))
+                loaded = True
+            except:  # FIX ME: catch actual exception
+                pass
+
+        # This chunk actually places the order.
+        # The above chunk of code doesn't slow the execution enough.
+        # Unfortunately I cannot come up with a better way of further slowing it down enough other than time.sleep().
+        time.sleep(0.45)
+        try:
+            self.driver.execute_script("window.parent.frames['ifrBetslip-"+ticket+"'].document.getElementById('directionChange').click()")  # Once for buy, twice for sell.
+            self.driver.execute_script("window.parent.frames['ifrBetslip-"+ticket+"'].document.getElementById('size').value = "+str(lotSize))
+            if short:
+                self.driver.execute_script("window.parent.frames['ifrBetslip-"+ticket+"'].document.getElementById('directionChange').click()")
+                self.driver.execute_script("window.parent.frames['ifrBetslip-"+ticket+"'].document.getElementById('level').value = "+str(option.sellPrice))
+            else:
+                self.driver.execute_script("window.parent.frames['ifrBetslip-"+ticket+"'].document.getElementById('level').value = "+str(option.buyPrice))
+            self.driver.execute_script("window.parent.frames['ifrBetslip-"+ticket+"'].document.getElementById('btnSubmit').click()")
+            loaded = False
+        except:  # FIX ME: catch actual exception
+            print("Error filling buyslip.")
+
+        while not loaded:
+            try:
+                self.driver.execute_script("window.parent.frames['ifrBetslip-"+ticket+"'].document.getElementById('betslipBtnClose').click()")
+                loaded = True
+            except:  # FIX ME: catch actual exception
+                pass
+
+        ticketsOpen -= 1
+        self.purchaseInProgress = False
 
     def fillWatchlist(self):
         """Code looks awful, I'll have to overhaul it when it comes time I finally need it.
         Used for creating a custom watchlist, filled with every Forex binary option.
         This is useful because Nadex does not save the entire watchlist, and thus it needs to be updated from time to time."""
 
-        global currentFrame
+        self.driver.switch_to_default_content()
+        self.driver.switch_to_frame("ifrFinder")
+        self.currentFrame = 'ifrFinder'
+        ui.WebSelf.DriverWait(self.driver, 20).until(EC.presence_of_element_located((By.ID, "ygtvt4")))
+        self.driver.find_element_by_id("ygtvt4").click()
+        ui.WebSelf.DriverWait(self.driver, 20).until(EC.presence_of_element_located((By.ID, "ygtvt8")))
 
-        driver.switch_to_default_content()
-        driver.switch_to_frame("ifrFinder")
-        currentFrame = 'ifrFinder'
-        ui.WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "ygtvt4")))
-        driver.find_element_by_id("ygtvt4").click()
-        ui.WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "ygtvt8")))
-
-        for number in range(8,17):
+        for number in range(8, 17):
             ID = "ygtvt" + str(number)
-            driver.find_element_by_id(ID).click()
+            self.driver.find_element_by_id(ID).click()
 
-        for number in range(18,87):
+        for number in range(18, 87):
 
             ID = "ygtvlabelel" + str(number)
-            driver.find_element_by_id(ID).click()
-            driver.switch_to_default_content()
-            driver.switch_to_frame("ifrDealingRates")
+            self.driver.find_element_by_id(ID).click()
+            self.driver.switch_to_default_content()
+            self.driver.switch_to_frame("ifrDealingRates")
             time.sleep(3)
 
-            buttons = driver.find_elements_by_css_selector(".optionsBtn")
+            buttons = self.driver.find_elements_by_css_selector(".optionsBtn")
 
             for button in buttons:
 
                 button.click()
-                driver.switch_to_default_content()
-                ui.WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "PORTFOLIO")))
-                driver.find_element_by_xpath('//*[@id="PORTFOLIO"]/a').click()
-                driver.switch_to_frame("ifrDealingRates")
+                self.driver.switch_to_default_content()
+                ui.WebSelf.DriverWait(self.driver, 20).until(EC.presence_of_element_located((By.ID, "PORTFOLIO")))
+                self.driver.find_element_by_xpath('//*[@id="PORTFOLIO"]/a').click()
+                self.driver.switch_to_frame("ifrDealingRates")
 
-            driver.switch_to_default_content()
-            driver.switch_to_frame("ifrFinder")
+            self.driver.switch_to_default_content()
+            self.driver.switch_to_frame("ifrFinder")
 
     def JStest(self):
         """Starts running a JavaScript 'console' for debugging purposes."""
@@ -389,12 +477,12 @@ class NadexSearch:
 
         while command != 'exit JS':
             try:
-                driver.execute_script(command)
+                self.driver.execute_script(command)
                 try:
-                    print(driver.execute_script(command))
-                except:
+                    print(self.driver.execute_script(command))
+                except:  # FIX ME: catch actual exception
                     pass
-            except:
+            except:  # FIX ME: catch actual exception
                 print("Error")
 
             command = input('>>>')
@@ -405,7 +493,6 @@ class NadexSearch:
 
         global optionConnectionParent, optionConnectionChild, priceGatheringChild, priceGatheringParent
         global motherOfAllUnderlying, currentExpiries
-        global optionList
         global price_time_parent, price_time_child
 
         priceGatheringChild.send(False)
@@ -414,9 +501,7 @@ class NadexSearch:
             print("\nPress 1 to scan for options.\nPress 2 to fill the watchlist with open Forex binaries.")
             print("Press 3 to demonstrate purchasing.\nPress 4 to print option names.\nPress 5 to print option prices.")
             print("Press 6 to start gathering price data.\nPress 7 to print sell price data.\nPress 8 to print buy price data.")
-            print("Press 9 to start trading.\nPress 0 to enter JavaScript console.")
-            menu = str(input(""))
-            menu = menu.lower()
+            menu = str(input("Press 9 to start trading.\nPress 0 to enter JavaScript console.")).lower()
 
             if menu == "1":
                 spread = eval(input("Enter a spread: "))
@@ -445,10 +530,14 @@ class NadexSearch:
                             optionConnectionParent.append(newParent)
                             optionConnectionChild.append(newChild)
 
-                        priceHistoryProcess = Process(target=self.priceHistory, args=(len(currentPrices), optionConnectionChild, price_time_child, priceGatheringChild))
+                        priceHistoryProcess = Process(target=self.priceHistory,
+                                                      args=(len(currentPrices),
+                                                            optionConnectionChild,
+                                                            price_time_child,
+                                                            priceGatheringChild))
                         priceHistoryProcess.start()
 
-                if not optionList:
+                if not self.optionList:
                     self.makeOptions(optionConnectionChild)
 
                 purchasingDemonstration = Process(target=self.placeOrderExample, args=())
@@ -456,30 +545,47 @@ class NadexSearch:
                 purchasingDemonstration.join()
 
             elif menu == "4":
-                condition =  eval(input("Remove unpriced options? [0/1]"))
+                clean = input("Remove unpriced options? [0/1]")
+
+                if clean == '0':
+                    clean = False
+                elif clean == '1':
+                    clean = True
+                else:
+                    print("Invalid input, assuming 1.")
+                    clean = True
+
                 try:
                     start_time = time.time()
 
-                    print(self.getOptionNames(condition))
+                    print(self.getOptionNames(clean))
 
                     timeTracker[4].append(time.time() - start_time)
                     print("\nTime elapsed: ", timeTracker[4][-1], "seconds.")
                     print("Average time: ", np.mean(timeTracker[4]), "seconds.")
 
-                except:
+                except:  # FIX ME: catch actual exception
                     print("Invalid input")
 
             elif menu == "5":
-                condition =  eval(input("Remove unpriced options? [0/1]"))
+                clean = input("Remove unpriced options? [0/1]")
+
+                if clean == '0':
+                    clean = False
+                elif clean == '1':
+                    clean = True
+                else:
+                    print("Invalid input, assuming 1.")
+
                 try:
                     start_time = time.time()
 
-                    print(self.getPrices(condition))
+                    print(self.getPrices(clean))
                     timeTracker[5].append(time.time() - start_time)
                     print("\nTime elapsed: ", timeTracker[5][-1], "seconds.")
                     print("Average time: ", np.mean(timeTracker[5]), "seconds.")
 
-                except:
+                except:  # FIX ME: catch actual exception
                     print("Invalid input")
 
             elif menu == "6":
@@ -515,7 +621,11 @@ class NadexSearch:
                             optionConnectionParent.append(newParent)
                             optionConnectionChild.append(newChild)
 
-                        priceHistoryProcess = Process(target=self.priceHistory, args=(len(currentPrices), optionConnectionChild, price_time_child, priceGatheringChild))
+                        priceHistoryProcess = Process(target=self.priceHistory,
+                                                      args=(len(currentPrices),
+                                                            optionConnectionChild,
+                                                            price_time_child,
+                                                            priceGatheringChild))
                         priceHistoryProcess.start()
                         while not motherOfAllSellPrices:
                             pass
@@ -525,7 +635,7 @@ class NadexSearch:
             elif menu == "0":
                 self.JStest()
 
-            elif menu in ["exit", "quit", "stop", "abort", "end"]:
+            elif menu.lower() in ("exit", "quit", "stop", "abort", "end"):
                 break
 
             else:
@@ -533,8 +643,6 @@ class NadexSearch:
 
 
 """                     GLOBAL VARIABLES            """
-iFrames = ['default', 'ifrMyPrices', 'ifrFinder', 'ifrDealingRates', 'ifrBetslip-0']
-currentFrame = iFrames[0]
 manager = Manager()
 motherOfAllBuyPrices = manager.list()
 motherOfAllContractNames = manager.list()
@@ -544,21 +652,28 @@ currentExpiries = manager.list()
 nadex = NadexSearch()
 processIDs = manager.list()
 queueList = []
-riskFreeRates = {'AUD' : 0.0371, 'CAD' : 0.0225, 'CHF' : 0.0075, 'EUR': 0.0256, #This is incorrect. I don't know how to find the risk-free rate for the EU as a whole. I'm making the approximation that it's equal to the UK's.
-                 'GBP' : 0.0256, 'JPY' : 0.0057, 'USD' : 0.0252}
+
+# EUR rate is incorrect. I don't know how to find the risk-free rate for the EU as a whole.
+# I'm making the approximation that it's equal to the UK's.
 ticketsOpen = -1
-timeTracker = [[] for i in range(1,11)]
+timeTracker = [[] for i in range(1, 11)]
 
 """                     PIPES                       """
 
 optionConnectionParent = []
-optionConnectionChild = []     #Later these are turned into arrays of pipes!
+optionConnectionChild = []  # Later these are turned into arrays of pipes
 priceGatheringParent, priceGatheringChild = Pipe()
 price_time_parent, price_time_child = Pipe()
 
 """                     MAIN                        """
 
+# Gather exchange rates headlessly while the browser signs in.
+rates = Process(target=nadex.getExchangeRates, args=())
+rates.start()
+
 nadex.signIn()
+
+rates.join()
 
 nadex.mainMenu()
 
@@ -566,22 +681,30 @@ print("\nFinished.")
 
 """
                             THINGS TO CLEAN UP:
+
 -Remove all globals and make them attributes of the class.
 -Make all exceptions specify a type of exeption.
--Optimize the math in the options class.
 -Look for an remove redundant/useless code.
--Conform to PEP 8 :(
--Push to git
+
 """
 
 """
                             KNOWN BUGS:
+
 # priceHistory() is broken: doesn't return times or underlying; prices stop being appended to the list after a short while.
+
                             TO DO:
+
 # Remove global variables and place them inside the class.
+
 # Create a "process manager" class to control the processes.
+
 #
+
 # Arbitrage!
+
 # A function is needed to monitor working orders.
+
 # A function is needed to monitor open positions.
+
 """

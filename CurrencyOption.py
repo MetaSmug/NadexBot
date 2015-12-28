@@ -1,105 +1,65 @@
 from math import exp, log, sqrt, pi
-from multiprocessing import Process, Pipe, Manager
+from scipy.stats import norm
+from multiprocessing import Process
 
 
 class CurrencyOption:
-    twoPi = 2*pi
+    TWOPI = 2*pi
+    riskFreeRates = {'AUD': 0.0371, 'CAD': 0.0225, 'CHF': 0.0075, 'EUR': 0.0256,
+                     'GBP': 0.0256, 'JPY': 0.0057, 'USD': 0.0252}
 
-    def __init__(self, name, buy, sell, expireTime, indicative, pipe, index):
-        global riskFreeRates, exchangeRates
+    def __init__(self, name, buy, sell, exchangeRate, expireTime, indicative, pipe, buyHistory, sellHistory, underlyingHistory):
+
         self.name = name
         self.buyPrice = buy
         self.sellPrice = sell
+
+        self.buyHistory = buyHistory
+        self.sellHistory = sellHistory
+        self.underlyingHistory = underlyingHistory
+
         self.expiry = expireTime
+        self.doExpiry = None
         if isinstance(indicative, float):
             self.underlying = indicative
-            doExp = True
+            self.doExpiry = True
         else:
-            self.underlying = exchangeRates[name.split(" ")[0]]
-            doExp = False
-        Process(target=self.updateFields, args=(pipe, index, doExp)).start()
+            self.underlying = exchangeRate
+            self.doExpiry = False
+        self.updateProcess = Process(target=self.updateFields, args=(pipe))
+        self.updateProcess.start()
+
         self.strike = float(name.split(" ")[-2].replace(">", ""))
         self.countries = [c for c in name.split(" ")[0].split("/")]
         self.conversionFactor = 1/self.underlying
-        self.r_domestic = riskFreeRates[self.countries[0]]
-        self.r_foreign = riskFreeRates[self.countries[1]]
-        self.d1 = 0
-        self.volatility = self.calculateVolatility(0.05)
-        self.d2 = self.d1 - self.volatility*sqrt(self.expiry)
+        self.r_domestic = self.riskFreeRates[self.countries[0]]
+        self.r_foreign = self.riskFreeRates[self.countries[1]]
 
-    def updateFields(self, pipe, index, doExpiry):
+        self.d1 = 0  # Will be set to correct value from function call below.
+        self.d2 = 0
+        self.d1Squared = 0
+        self.d1d2 = 0
+        self.d2Squared = 0
+        self.volatility = self.calculateVolatility(0.05)
+
+    def updateFields(self, pipe):
         """Updates the buy, sell, expire time, and underlying value for the option."""
 
-        while doExpiry:
+        while self.doExpiry:
             self.sellPrice = pipe.recv()[0][-1]
             self.buyPrice = pipe.recv()[1][-1]
             self.expiry = pipe.recv()[2]
             self.underlying = pipe.recv()[3]
 
-        while not doExpiry:
-            self.buyPrice = motherOfAllBuyPrices[index][-1]
-            self.sellPrice = motherOfAllSellPrices[index][-1]
-            self.underlying = motherOfAllUnderlying[index]
+        while not self.doExpiry:
+            self.buyPrice = self.buyHistory[-1]
+            self.sellPrice = self.sellHistory[-1]
+            self.underlying = self.underlyingHistory
 
     def convertUnits(self):
-        """Returns the correct conversion factor, aka exchange rate, for the given currencies.
-        This seems useless. <- I wrote that year ago, why?
-        Probably because it's not used anywhere.
-        No, it's because all it really does is return a reciprocal of a value."""
+        """Returns the correct conversion factor, aka exchange rate, for the given currencies."""
 
         return 1.0/self.underlying
-
-    def buy(self, lotSize=1, short=False):
-        """Buys the option."""
-
-        global ticketsOpen, purchaseInProgress
-
-        while purchaseInProgress:
-            pass
-        purchaseInProgress = True
-        try:
-            driver.find_element_by_link_text(self.name).click()
-            ticketsOpen += 1
-            myTicket = ticketsOpen
-        except:
-            return "Link_text not found."
-
-        #This is here to prevent the code from executing before the order form has even opened.
-        loaded = False
-        while not loaded:
-            try:
-                float(driver.execute_script("return window.parent.frames['ifrBetslip-"+str(myTicket)+"'].document.getElementById('dmaPriceCurrent').textContent"))
-                loaded = True
-            except:
-                pass
-
-        #This chunk actually places the order.
-        #The above chunk of code doesn't slow the execution enough.
-        #Unfortunately I cannot come up with a better way of further slowing it down enough other than time.sleep().
-        time.sleep(0.45)
-        try:
-            driver.execute_script("window.parent.frames['ifrBetslip-"+str(myTicket)+"'].document.getElementById('directionChange').click()") #Once for buy, twice for sell.
-            driver.execute_script("window.parent.frames['ifrBetslip-"+str(myTicket)+"'].document.getElementById('size').value = "+str(lotSize))
-            if short:
-                driver.execute_script("window.parent.frames['ifrBetslip-"+str(myTicket)+"'].document.getElementById('directionChange').click()")
-                driver.execute_script("window.parent.frames['ifrBetslip-"+str(myTicket)+"'].document.getElementById('level').value = "+str(self.sellPrice))
-            else:
-                driver.execute_script("window.parent.frames['ifrBetslip-"+str(myTicket)+"'].document.getElementById('level').value = "+str(self.buyPrice))
-            driver.execute_script("window.parent.frames['ifrBetslip-"+str(myTicket)+"'].document.getElementById('btnSubmit').click()")
-            loaded = False
-        except:
-            print("Error filling buyslip.")
-
-        while not loaded:
-            try:
-                driver.execute_script("window.parent.frames['ifrBetslip-"+str(myTicket)+"'].document.getElementById('betslipBtnClose').click()")
-                loaded = True
-            except:
-                pass
-
-        ticketsOpen -= 1
-        purchaseInProgress = False
-
 
     def calculateVolatility(self, precision):
         """Calculates volatility using the bisection method on the Garman-Kohlhagen model.
@@ -112,10 +72,11 @@ class CurrencyOption:
         while True:
             self.volatility = (high + low)/2.0
 
-            self.d1 = (log(self.underlying/self.strike) + (self.r_domestic - self.r_foreign + 0.5*self.volatility*self.volatility)*self.expiry)/(self.volatility*sqrt(self.expiry))
+            self.d1 = ((log(self.underlying/self.strike) + (self.r_domestic - self.r_foreign + 0.5*self.volatility*self.volatility)*self.expiry) / (self.volatility*sqrt(self.expiry)))
+
             value = exp(-self.r_domestic*self.expiry)*norm.cdf(self.d1, 0, 1)*self.buyPrice*self.conversionFactor
 
-            if (abs(self.buyPrice - value) <= precision)  or (high <= 0.1) or (low >= 299.9):
+            if (abs(self.buyPrice - value) <= precision) or (high <= 0.1) or (low >= 299.9):
                 break
             elif value < self.buyPrice:
                 low = self.volatility
@@ -123,10 +84,13 @@ class CurrencyOption:
                 high = self.volatility
 
         self.d2 = self.d1 - self.volatility*sqrt(self.expiry)
+        self.d1Squared = self.d1*self.d1
+        self.d1d2 = self.d1*self.d2
+        self.d2Squared = self.d2*self.d2
+
         return self.volatility
 
 #   """  GREEKS      """
-# Note that many of these functions have a*a in them, since it is slightly faster than a**2.
 
     def printGreeks(self):
         """Simply calculates all of the major Greeks and prints them out.
@@ -171,14 +135,14 @@ class CurrencyOption:
         """Minus one times the derivative of value with respect to time."""
 
         if short:
-            return (-exp(-self.r_foreign * self.expiry - (self.d1*self.d1)/2) * self.underlying * self.volatility/(2*sqrt(twoPi*self.expiry)))-(self.r_foreign*exp(-self.r_foreign*self.expiry)*norm.cdf(-self.d1))+(self.r_domestic*exp(self.r_domestic*self.expiry)*self.strike*norm.cdf(-self.d2))
+            return (-exp(-self.r_foreign * self.expiry - (self.d1Squared)/2) * self.underlying * self.volatility/(2*sqrt(self.TWOPI*self.expiry)))-(self.r_foreign*exp(-self.r_foreign*self.expiry)*norm.cdf(-self.d1))+(self.r_domestic*exp(self.r_domestic*self.expiry)*self.strike*norm.cdf(-self.d2))
         else:
-            return (-exp(-self.r_foreign * self.expiry - (self.d1*self.d1)/2) * self.underlying * self.volatility/(2*sqrt(twoPi*self.expiry)))+(self.r_foreign*exp(-self.r_foreign*self.expiry)*norm.cdf(self.d1))-(self.r_domestic*exp(self.r_domestic*self.expiry)*self.strike*norm.cdf(self.d2))
+            return (-exp(-self.r_foreign * self.expiry - (self.d1Squared)/2) * self.underlying * self.volatility/(2*sqrt(self.TWOPI*self.expiry)))+(self.r_foreign*exp(-self.r_foreign*self.expiry)*norm.cdf(self.d1))-(self.r_domestic*exp(self.r_domestic*self.expiry)*self.strike*norm.cdf(self.d2))
 
     def vega(self):
         """Derivative of value with respect to volatility."""
 
-        return exp(-self.r_foreign * self.expiry - (self.d1*self.d1)/2)*self.underlying*sqrt(self.expiry/(twoPi))
+        return exp(-self.r_foreign * self.expiry - (self.d1Squared)/2)*self.underlying*sqrt(self.expiry/(self.TWOPI))
 
     def rho(self, short=False):
         """Derivative of value with respect to the interest rate."""
@@ -192,35 +156,35 @@ class CurrencyOption:
         """Derivative of delta with respect to underlying.
         Second Derivative of with value respect to underlying."""
 
-        return exp(-self.r_foreign * self.expiry - (self.d1*self.d1)/2)/(self.underlying * self.volatility * sqrt(twoPi*self.expiry))
+        return exp(-self.r_foreign * self.expiry - (self.d1Squared)/2)/(self.underlying * self.volatility * sqrt(self.TWOPI*self.expiry))
 
     def vanna(self):
         """Derivative of delta with respect to volatility.
         Derivative of vega with respect to underlying.
         Second Derivative of value with respect once to underlying and volatility."""
 
-        return -exp(-self.r_foreign * self.expiry - (self.d1*self.d1)/2) * self.d2 /(self.volatility * sqrt(twoPi))
+        return -exp(-self.r_foreign * self.expiry - (self.d1Squared)/2) * self.d2 /(self.volatility * sqrt(self.TWOPI))
 
     def vomma(self):
         """Derivative of vega with respect to volatility.
         Second Derivative of value with respect to volatility."""
 
-        return self.underlying * exp(-self.r_foreign * self.expiry - (self.d1*self.d1)/2) * sqrt(self.expiry) * self.d1 * self.d2 / self.volatility
+        return self.underlying * exp(-self.r_foreign * self.expiry - (self.d1Squared)/2) * sqrt(self.expiry) * self.d1d2 / self.volatility
 
     def speed(self):
         """Derivative of gamma with respect to underlying.
         Third Derivative of value with respect to underlying."""
 
-        return -((exp(-self.r_foreign * self.expiry - (self.d1*self.d1)/2)/(self.underlying * self.volatility * sqrt(twoPi*self.expiry)))/self.underlying) * (1 + self.d1/(self.volatility*sqrt(self.expiry)))
+        return -((exp(-self.r_foreign * self.expiry - (self.d1Squared)/2)/(self.underlying * self.volatility * sqrt(self.TWOPI*self.expiry)))/self.underlying) * (1 + self.d1/(self.volatility*sqrt(self.expiry)))
 
     def zomma(self):
         """Derivative of gamma with respect to volatility.
         Third Derivative of value with respect twice to underlying and once to volatility."""
 
-        return (exp(-self.r_foreign * self.expiry - (self.d1*self.d1)/2)/(self.underlying * self.volatility * sqrt(twoPi*self.expiry))) * ((self.d1*self.d2 -1)/self.volatility)
+        return (exp(-self.r_foreign * self.expiry - (self.d1Squared)/2)/(self.underlying * self.volatility * sqrt(self.TWOPI*self.expiry))) * ((self.d1d2 -1)/self.volatility)
 
     def ultima(self):
         """Derivative of vomma with respect to volatility.
         Third Derivative of value with respect to volatility."""
 
-        return ((-exp(-self.r_foreign * self.expiry - (self.d1*self.d1)/2)*self.underlying*sqrt(self.expiry/twoPi))/(self.volatility*self.volatility)) * (self.d1*self.d2*(1-self.d1*self.d2) + self.d1*self.d1 + self.d2*self.d2)
+        return ((-exp(-self.r_foreign*self.expiry - self.d1Squared/2)*self.underlying*sqrt(self.expiry/self.TWOPI))/(self.volatility*self.volatility)) * (self.d1d2*(1 - self.d1d2) + self.d1Squared + self.d2Squared)
